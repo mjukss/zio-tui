@@ -73,6 +73,10 @@ object Input {
       keyMap.bind(KeyEvent.Character(i.toChar), str);
     }
 
+    keyMap.bind(KeyEvent.Tab, "\t")
+    //    keyMap.bind(KeyEvent.Escape, "\u001b")
+    keyMap.bind(KeyEvent.Escape, Character.toString(27.toChar))
+
     keyMap.bind(KeyEvent.Exit, KeyMap.key(terminal, Capability.key_exit), Character.toString(3.toChar))
     keyMap.bind(KeyEvent.Up, KeyMap.key(terminal, Capability.key_up), "[A")
     keyMap.bind(KeyEvent.Left, KeyMap.key(terminal, Capability.key_down), "[D")
