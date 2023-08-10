@@ -15,7 +15,7 @@ trait TerminalApp[-I, S, +A] { self =>
 
   def render(state: S): View
 
-  def update(state: S, event: TerminalEvent[I]): Step[S, A]
+  def update(state: S, event: TerminalEvent[I]): Task[Step[S, A]]
 }
 
 object TerminalApp {
@@ -36,10 +36,10 @@ sealed trait TerminalEvent[+I]
 
 trait TUI {
   def run[I, S, A](
-    terminalApp: TerminalApp[I, S, A],
-    events: ZStream[Any, Throwable, I],
-    initialState: S
-  ): Task[Option[A]]
+                    terminalApp: TerminalApp[I, S, A],
+                    events: ZStream[Any, Throwable, I],
+                    initialState: S
+                  ): Task[Option[A]]
 }
 
 object TUI {
@@ -55,57 +55,57 @@ object TUI {
     ZIO.serviceWithZIO[TUI](_.run(terminalApp, ZStream.never, initialState))
 
   def runWithEvents[I, S, A](
-    terminalApp: TerminalApp[I, S, A]
-  )(events: ZStream[Any, Throwable, I], initialState: S): RIO[TUI, Option[A]] =
+                              terminalApp: TerminalApp[I, S, A]
+                            )(events: ZStream[Any, Throwable, I], initialState: S): RIO[TUI, Option[A]] =
     ZIO.serviceWithZIO[TUI](_.run(terminalApp, events, initialState))
 }
 
 case class TUILive(
-  fullScreen: Boolean,
-  oldMap: Ref[TextMap]
-) extends TUI {
+                    fullScreen: Boolean,
+                    oldMap: Ref[TextMap]
+                  ) extends TUI {
 
   @volatile
   var lastHeight = 0
 
   def run[I, S, A](
-    terminalApp: TerminalApp[I, S, A],
-    events: ZStream[Any, Throwable, I],
-    initialState: S
-  ): Task[Option[A]] =
+                    terminalApp: TerminalApp[I, S, A],
+                    events: ZStream[Any, Throwable, I],
+                    initialState: S
+                  ): Task[Option[A]] =
     ZIO.scoped {
       for {
         _             <- Input.rawModeScoped(fullScreen)
         stateRef      <- SubscriptionRef.make(initialState)
         resultPromise <- Promise.make[Nothing, Option[A]]
         _ <- (for {
-               _              <- ZIO.succeed(Input.ec.clear())
-               (width, height) = Input.terminalSize
-               _              <- renderFullScreen(terminalApp, initialState, width, height)
-             } yield ()).when(fullScreen)
+          _              <- ZIO.succeed(Input.ec.clear())
+          (width, height) = Input.terminalSize
+          _              <- renderFullScreen(terminalApp, initialState, width, height)
+        } yield ()).when(fullScreen)
 
         renderStream =
           stateRef.changes
-            .zipLatestWith(Input.terminalSizeStream)((_, _))
+            .zipWithLatest(Input.terminalSizeStream)((_, _))
             .tap { case (state, (width, height)) =>
               if (fullScreen) renderFullScreen(terminalApp, state, width, height)
               else renderTerminal(terminalApp, state)
             }
 
         updateStream = Input.keyEventStream.mergeEither(events).tap { keyEvent =>
-                         val event = keyEvent match {
-                           case Left(value)  => TerminalEvent.SystemEvent(value)
-                           case Right(value) => TerminalEvent.UserEvent(value)
-                         }
+          val event = keyEvent match {
+            case Left(value)  => TerminalEvent.SystemEvent(value)
+            case Right(value) => TerminalEvent.UserEvent(value)
+          }
 
-                         stateRef.updateZIO { state =>
-                           terminalApp.update(state, event) match {
-                             case Step.Update(state) => ZIO.succeed(state)
-                             case Step.Done(result)  => resultPromise.succeed(Some(result)).as(state)
-                             case Step.Exit          => resultPromise.succeed(None).as(state)
-                           }
-                         }
-                       }
+          stateRef.updateZIO { state =>
+            terminalApp.update(state, event).flatMap {
+              case Step.Update(state) => ZIO.succeed(state)
+              case Step.Done(result)  => resultPromise.succeed(Some(result)).as(state)
+              case Step.Exit          => resultPromise.succeed(None).as(state)
+            }
+          }
+        }
 
         _      <- ZStream.mergeAllUnbounded()(renderStream, updateStream).interruptWhen(resultPromise.await).runDrain
         result <- resultPromise.await
@@ -116,28 +116,21 @@ case class TUILive(
   private val clearToEndAnsiString = s"$escape${"0J"}"
 
   def renderFullScreen[I, S, A](
-    terminalApp: TerminalApp[I, S, A],
-    state: S,
-    width: Int,
-    height: Int
-  ): UIO[Unit] =
+                                 terminalApp: TerminalApp[I, S, A],
+                                 state: S,
+                                 width: Int,
+                                 height: Int
+                               ): UIO[Unit] =
     ZIO.succeed {
       val map = terminalApp.render(state).center.textMap(width, height)
       print(clearToEndAnsiString + map.toString)
     }
 
   private def renderTerminal[I, S, A]( //
-    terminalApp: TerminalApp[I, S, A],
-    state: S
-  ): UIO[Unit] =
+                                       terminalApp: TerminalApp[I, S, A],
+                                       state: S
+                                     ): UIO[Unit] =
     ZIO.succeed {
-//    oldMap.update { map =>
-//      val newMap = terminalApp.render(state).renderTextMap
-//      val rendered = TextMap.diff(map, newMap)
-//      println(rendered)
-//      lastHeight = newMap.height
-//      newMap
-
       val newMap   = terminalApp.render(state).renderTextMap
       val rendered = newMap.toString
       println(scala.Console.RESET + TextMap.moveUp(lastHeight) + clearToEndAnsiString + rendered + scala.Console.RESET)
